@@ -786,6 +786,48 @@ Asset* AssetManager::openIdmapLocked(const struct asset_path& ap) const
     return ass;
 }
 
+void AssetManager::addSystemOverlays(const char* pathOverlaysList,
+        const String8& targetPackagePath, ResTable* sharedRes, size_t offset) const
+{
+    FILE* fin = fopen(pathOverlaysList, "r");
+    if (fin == NULL) {
+        return;
+    }
+
+    char buf[1024];
+    while (fgets(buf, sizeof(buf), fin)) {
+        // format of each line:
+        //   <path to apk><space><path to idmap><newline>
+        char* space = strchr(buf, ' ');
+        char* newline = strchr(buf, '\n');
+        asset_path oap;
+
+        if (space == NULL || newline == NULL || newline < space) {
+            continue;
+        }
+
+        oap.path = String8(buf, space - buf);
+        oap.type = kFileTypeRegular;
+        oap.idmap = String8(space + 1, newline - space - 1);
+        oap.isSystemOverlay = true;
+
+        Asset* oass = const_cast<AssetManager*>(this)->
+            openNonAssetInPathLocked("resources.arsc",
+                    Asset::ACCESS_BUFFER,
+                    oap);
+
+        if (oass != NULL) {
+            Asset* oidmap = openIdmapLocked(oap);
+            offset++;
+            sharedRes->add(oass, oidmap, offset + 1, false);
+            const_cast<AssetManager*>(this)->mAssetPaths.add(oap);
+            const_cast<AssetManager*>(this)->mZipSet.addOverlay(targetPackagePath, oap);
+            delete oidmap;
+        }
+    }
+    fclose(fin);
+}
+
 const ResTable& AssetManager::getResources(bool required) const
 {
     const ResTable* rt = getResTable(required);
@@ -919,7 +961,7 @@ Asset* AssetManager::openInLocaleVendorLocked(const char* fileName, AccessMode m
             /* look at the filesystem on disk */
             String8 path(createPathNameLocked(ap, locale, vendor));
             path.appendPath(fileName);
-    
+
             String8 excludeName(path);
             excludeName.append(kExcludeExtension);
             if (::getFileType(excludeName.string()) != kFileTypeNonexistent) {
@@ -927,28 +969,28 @@ Asset* AssetManager::openInLocaleVendorLocked(const char* fileName, AccessMode m
                 //printf("+++ excluding '%s'\n", (const char*) excludeName);
                 return kExcludedAsset;
             }
-    
+
             pAsset = openAssetFromFileLocked(path, mode);
-    
+
             if (pAsset == NULL) {
                 /* try again, this time with ".gz" */
                 path.append(".gz");
                 pAsset = openAssetFromFileLocked(path, mode);
             }
-    
+
             if (pAsset != NULL)
                 pAsset->setAssetSource(path);
         } else {
             /* find in cache */
             String8 path(createPathNameLocked(ap, locale, vendor));
             path.appendPath(fileName);
-    
+
             AssetDir::FileInfo tmpInfo;
             bool found = false;
-    
+
             String8 excludeName(path);
             excludeName.append(kExcludeExtension);
-    
+
             if (mCache.indexOf(excludeName) != NAME_NOT_FOUND) {
                 /* go no farther */
                 //printf("+++ Excluding '%s'\n", (const char*) excludeName);
@@ -1770,7 +1812,7 @@ bool AssetManager::fncScanAndMergeDirLocked(
 
     // XXX This is broken -- the filename cache needs to hold the base
     // asset path separately from its filename.
-    
+
     partialPath = createPathNameLocked(ap, locale, vendor);
     if (dirName[0] != '\0') {
         partialPath.appendPath(dirName);
